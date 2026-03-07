@@ -10,7 +10,17 @@ interface Photo {
   alt_text: string | null
 }
 
-function ImageCard({ photo, onClick }: { photo: Photo; onClick: () => void }) {
+function ImageCard({ 
+  photo, 
+  onClick, 
+  priority, 
+  onLoad 
+}: { 
+  photo: Photo; 
+  onClick: () => void; 
+  priority?: boolean;
+  onLoad?: () => void;
+}) {
   const cleanTitle = (title: string | null) => {
     if (!title) return ''
     return title
@@ -27,12 +37,13 @@ function ImageCard({ photo, onClick }: { photo: Photo; onClick: () => void }) {
       <img
         src={photo.image_url}
         alt={photo.alt_text || 'Gallery image'}
-        loading="lazy"
+        loading={priority ? "eager" : "lazy"}
         decoding="async"
+        onLoad={onLoad}
+        onError={onLoad} // Prevents infinite loading if an image link is broken
         className="w-full h-auto object-cover"
       />
       
-      {/* Hover Overlay */}
       <div className="absolute inset-2 sm:inset-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4 bg-gradient-to-t from-black/60 via-black/20 to-transparent pointer-events-none">
         <span className="text-white font-medium tracking-widest uppercase text-xs">
           {cleanTitle(photo.title) || 'VIEW'}
@@ -44,8 +55,29 @@ function ImageCard({ photo, onClick }: { photo: Photo; onClick: () => void }) {
 
 export default function Gallery() {
   const [photos, setPhotos] = useState<Photo[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loadingDB, setLoadingDB] = useState(true) 
+  const [loadedInitialCount, setLoadedInitialCount] = useState(0)
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number | null>(null)
+  
+  // Track window width so DOM array columns match responsive visual columns
+  const [numCols, setNumCols] = useState(4)
+
+  // Touch states for swipe functionality
+  const [touchStart, setTouchStart] = useState(0)
+  const [touchEnd, setTouchEnd] = useState(0)
+
+  useEffect(() => {
+    // Determine how many flex columns we actually need based on screen size
+    const updateCols = () => {
+      if (window.innerWidth < 640) setNumCols(1)
+      else if (window.innerWidth < 1024) setNumCols(2)
+      else setNumCols(4)
+    }
+    
+    updateCols() // Initial check
+    window.addEventListener('resize', updateCols)
+    return () => window.removeEventListener('resize', updateCols)
+  }, [])
 
   useEffect(() => {
     async function fetchPhotos() {
@@ -59,7 +91,7 @@ export default function Gallery() {
         }
         setPhotos(shuffled)
       }
-      setLoading(false)
+      setLoadingDB(false)
     }
     fetchPhotos()
   }, [])
@@ -74,25 +106,54 @@ export default function Gallery() {
     if (selectedPhotoIndex !== null) setSelectedPhotoIndex((selectedPhotoIndex - 1 + photos.length) % photos.length)
   }
 
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center min-h-[50vh]">
-        <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
-      </div>
-    )
+  const handleTouchStart = (e: React.TouchEvent) => {
+    setTouchStart(e.targetTouches[0].clientX)
   }
 
-  // Strictly split into 4 columns for the classic Masonry effect
-  const columns: Photo[][] = [[], [], [], []]
-  photos.forEach((photo, index) => {
-    columns[index % 4].push(photo)
+  const handleTouchMove = (e: React.TouchEvent) => {
+    setTouchEnd(e.targetTouches[0].clientX)
+  }
+
+  const handleTouchEnd = () => {
+    if (!touchStart || !touchEnd) return
+    const distance = touchStart - touchEnd
+    const minSwipeDistance = 50
+
+    if (distance > minSwipeDistance) {
+      nextPhoto() 
+    } else if (distance < -minSwipeDistance) {
+      prevPhoto() 
+    }
+    
+    setTouchStart(0)
+    setTouchEnd(0)
+  }
+
+  const targetInitialCount = Math.min(4, photos.length)
+  const isReady = photos.length > 0 && loadedInitialCount >= targetInitialCount
+  const showLoader = loadingDB || (!isReady && photos.length > 0)
+
+  // Wait to map all photos until the top 4 are rendered
+  const photosToRender = isReady ? photos : photos.slice(0, 4)
+
+  // Dynamically create 1, 2, or 4 columns based on the window resize listener
+  const columns: Photo[][] = Array.from({ length: numCols }, () => [])
+  photosToRender.forEach((photo, index) => {
+    columns[index % numCols].push(photo)
   })
 
   return (
-    <div className="w-full px-4 sm:px-8 pb-20 bg-gray-50">
+    <div className="w-full px-4 sm:px-8 pb-20 bg-gray-50 min-h-screen">
       
-      {/* The 4-Column Masonry Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 sm:gap-8">
+      {/* Full Screen Loader */}
+      {showLoader && (
+        <div className="fixed inset-0 flex justify-center items-center bg-gray-50 z-50">
+          <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+        </div>
+      )}
+
+      {/* Masonry Grid */}
+      <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 sm:gap-8 transition-opacity duration-700 ${showLoader ? 'opacity-0' : 'opacity-100'}`}>
         {columns.map((colPhotos, colIndex) => (
           <div 
             key={colIndex} 
@@ -101,11 +162,20 @@ export default function Gallery() {
             }`}
           >
             {colPhotos.map((photo) => {
+              // Ensure we are tracking the true position of the photo in the original array
               const globalIndex = photos.findIndex(p => p.id === photo.id)
+              const isPriority = globalIndex < 4 
+
               return (
                 <ImageCard 
                   key={photo.id} 
                   photo={photo} 
+                  priority={isPriority}
+                  onLoad={() => {
+                    if (isPriority) {
+                      setLoadedInitialCount(prev => prev + 1)
+                    }
+                  }}
                   onClick={() => setSelectedPhotoIndex(globalIndex)} 
                 />
               )
@@ -117,27 +187,31 @@ export default function Gallery() {
       {/* Lightbox Modal */}
       {selectedPhotoIndex !== null && (
         <div 
-          className="fixed inset-0 z-[100] bg-white/95 backdrop-blur-md flex items-center justify-center p-4"
+          className="fixed inset-0 z-[100] bg-white/95 backdrop-blur-md flex items-center justify-center p-4 sm:p-8"
           onClick={() => setSelectedPhotoIndex(null)}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
         >
-          <button className="absolute top-8 right-8 text-black/50 hover:text-black transition-colors bg-transparent border-none outline-none focus:outline-none hover:bg-transparent cursor-pointer">
+          <button className="absolute top-4 right-4 sm:top-8 sm:right-8 text-black/50 hover:text-black transition-colors bg-transparent border-none outline-none focus:outline-none hover:bg-transparent cursor-pointer z-50">
             <X className="w-8 h-8" />
           </button>
 
-          <button onClick={prevPhoto} className="absolute left-4 text-black/20 hover:text-black p-2 bg-transparent border-none outline-none focus:outline-none hover:bg-transparent cursor-pointer">
+          <button onClick={prevPhoto} className="hidden sm:block absolute left-4 text-black/20 hover:text-black p-2 bg-transparent border-none outline-none focus:outline-none hover:bg-transparent cursor-pointer z-50">
             <ChevronLeft className="w-12 h-12 stroke-1" />
           </button>
           
-          <button onClick={nextPhoto} className="absolute right-4 text-black/20 hover:text-black p-2 bg-transparent border-none outline-none focus:outline-none hover:bg-transparent cursor-pointer">
+          <button onClick={nextPhoto} className="hidden sm:block absolute right-4 text-black/20 hover:text-black p-2 bg-transparent border-none outline-none focus:outline-none hover:bg-transparent cursor-pointer z-50">
             <ChevronRight className="w-12 h-12 stroke-1" />
           </button>
 
-          <div className="max-w-6xl max-h-full flex flex-col items-center gap-6">
+          <div className="relative max-w-6xl max-h-full flex flex-col items-center gap-6 pt-12 sm:pt-0">
             <img 
               src={photos[selectedPhotoIndex].image_url} 
-              className="max-w-full max-h-[80vh] object-contain shadow-2xl"
+              className="max-w-full max-h-[75vh] sm:max-h-[80vh] object-contain shadow-2xl select-none"
               alt="Enlarged"
               onClick={(e) => e.stopPropagation()} 
+              draggable="false"
             />
             
             <div className="text-center space-y-4">
