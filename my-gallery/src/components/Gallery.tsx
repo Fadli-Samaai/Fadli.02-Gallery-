@@ -8,6 +8,8 @@ interface Photo {
   image_url: string
   title: string | null
   alt_text: string | null
+  width: number | null
+  height: number | null
 }
 
 function ImageCard({ 
@@ -29,22 +31,29 @@ function ImageCard({
       .trim()
   }
 
+  const aspectRatioStyle = (photo.width && photo.height) 
+    ? { aspectRatio: `${photo.width} / ${photo.height}` } 
+    : {};
+
+  const optimizedThumbnailUrl = `https://wsrv.nl/?url=${encodeURIComponent(photo.image_url)}&w=600&output=webp&q=80`;
+
   return (
     <div 
       onClick={onClick}
-      className="group relative bg-white p-2 sm:p-3 shadow-sm cursor-zoom-in transition-all duration-500 hover:scale-[1.02] hover:shadow-md rounded-2xl"
+      className="group relative bg-white p-2 sm:p-3 shadow-sm cursor-zoom-in transition-all duration-500 hover:scale-[1.02] hover:shadow-md rounded-2xl overflow-hidden"
+      style={aspectRatioStyle}
     >
       <img
-        src={photo.image_url}
+        src={optimizedThumbnailUrl}
         alt={photo.alt_text || 'Gallery image'}
         loading={priority ? "eager" : "lazy"}
         decoding="async"
         onLoad={onLoad}
-        onError={onLoad} // Prevents infinite loading if an image link is broken
-        className="w-full h-auto object-cover"
+        onError={onLoad} 
+        className="w-full h-full object-cover rounded-xl"
       />
       
-      <div className="absolute inset-2 sm:inset-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4 bg-gradient-to-t from-black/60 via-black/20 to-transparent pointer-events-none">
+      <div className="absolute inset-2 sm:inset-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4 bg-gradient-to-t from-black/60 via-black/20 to-transparent pointer-events-none rounded-xl">
         <span className="text-white font-medium tracking-widest uppercase text-xs">
           {cleanTitle(photo.title) || 'VIEW'}
         </span>
@@ -59,22 +68,18 @@ export default function Gallery() {
   const [loadedInitialCount, setLoadedInitialCount] = useState(0)
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number | null>(null)
   
-  // Track window width so DOM array columns match responsive visual columns
   const [numCols, setNumCols] = useState(4)
-
-  // Touch states for swipe functionality
   const [touchStart, setTouchStart] = useState(0)
   const [touchEnd, setTouchEnd] = useState(0)
 
   useEffect(() => {
-    // Determine how many flex columns we actually need based on screen size
     const updateCols = () => {
       if (window.innerWidth < 640) setNumCols(1)
       else if (window.innerWidth < 1024) setNumCols(2)
       else setNumCols(4)
     }
     
-    updateCols() // Initial check
+    updateCols() 
     window.addEventListener('resize', updateCols)
     return () => window.removeEventListener('resize', updateCols)
   }, [])
@@ -90,6 +95,8 @@ export default function Gallery() {
           [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
         }
         setPhotos(shuffled)
+      } else if (error) {
+        console.error("Error fetching images:", error)
       }
       setLoadingDB(false)
     }
@@ -119,11 +126,8 @@ export default function Gallery() {
     const distance = touchStart - touchEnd
     const minSwipeDistance = 50
 
-    if (distance > minSwipeDistance) {
-      nextPhoto() 
-    } else if (distance < -minSwipeDistance) {
-      prevPhoto() 
-    }
+    if (distance > minSwipeDistance) nextPhoto() 
+    else if (distance < -minSwipeDistance) prevPhoto() 
     
     setTouchStart(0)
     setTouchEnd(0)
@@ -133,10 +137,8 @@ export default function Gallery() {
   const isReady = photos.length > 0 && loadedInitialCount >= targetInitialCount
   const showLoader = loadingDB || (!isReady && photos.length > 0)
 
-  // Wait to map all photos until the top 4 are rendered
   const photosToRender = isReady ? photos : photos.slice(0, 4)
 
-  // Dynamically create 1, 2, or 4 columns based on the window resize listener
   const columns: Photo[][] = Array.from({ length: numCols }, () => [])
   photosToRender.forEach((photo, index) => {
     columns[index % numCols].push(photo)
@@ -145,14 +147,12 @@ export default function Gallery() {
   return (
     <div className="w-full px-4 sm:px-8 pb-20 bg-gray-50 min-h-screen">
       
-      {/* Full Screen Loader */}
       {showLoader && (
         <div className="fixed inset-0 flex justify-center items-center bg-gray-50 z-50">
           <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
         </div>
       )}
 
-      {/* Masonry Grid */}
       <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 sm:gap-8 transition-opacity duration-700 ${showLoader ? 'opacity-0' : 'opacity-100'}`}>
         {columns.map((colPhotos, colIndex) => (
           <div 
@@ -162,7 +162,6 @@ export default function Gallery() {
             }`}
           >
             {colPhotos.map((photo) => {
-              // Ensure we are tracking the true position of the photo in the original array
               const globalIndex = photos.findIndex(p => p.id === photo.id)
               const isPriority = globalIndex < 4 
 
@@ -184,7 +183,6 @@ export default function Gallery() {
         ))}
       </div>
 
-      {/* Lightbox Modal */}
       {selectedPhotoIndex !== null && (
         <div 
           className="fixed inset-0 z-[100] bg-white/95 backdrop-blur-md flex items-center justify-center p-4 sm:p-8"
@@ -217,7 +215,7 @@ export default function Gallery() {
             <div className="text-center space-y-4">
               <h2 className="text-black tracking-[0.3em] font-light uppercase text-sm">
                 {photos[selectedPhotoIndex].title 
-                  ? photos[selectedPhotoIndex].title.replace(/\s*\(.*?\)\s*/g, '').replace(/[\[\]]/g, '').trim() 
+                  ? photos[selectedPhotoIndex].title!.replace(/\s*\(.*?\)\s*/g, '').replace(/[\[\]]/g, '').trim() 
                   : 'UNTITLED'
                 }
               </h2>

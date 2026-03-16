@@ -1,180 +1,263 @@
-import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { UploadCloud, Image as ImageIcon, Loader2 } from 'lucide-react'
-import { supabase } from '../lib/supabaseClient'
+import { useState, useRef } from 'react';
+import { supabase } from '../lib/supabaseClient';
 
 export default function UploadPage() {
-  const navigate = useNavigate()
-  const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null)
-  const [file, setFile] = useState<File | null>(null)
-  const [title, setTitle] = useState('')
-  const [uploading, setUploading] = useState(false)
-  const [isDragging, setIsDragging] = useState(false)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [title, setTitle] = useState('');
+  const [altText, setAltText] = useState('');
 
-  useEffect(() => {
-    async function checkAuth() {
-      const { data, error } = await supabase
-        .from('site_config')
-        .select('is_upload_active')
-        .eq('id', 1)
-        .single()
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-      if (error || !data?.is_upload_active) {
-        navigate('/') 
-      } else {
-        setIsAuthorized(true)
-      }
+  const getImageDimensions = (file: File): Promise<{ width: number; height: number }> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        resolve({ width: img.width, height: img.height });
+        URL.revokeObjectURL(img.src); // Clean up memory
+      };
+      img.onerror = () => reject(new Error('Failed to read image dimensions'));
+      img.src = URL.createObjectURL(file);
+    });
+  };
+
+  const generateSafeFilename = (titleText: string, originalFile: File) => {
+    const ext = originalFile.name.substring(originalFile.name.lastIndexOf('.'));
+    
+    let baseName = titleText;
+    if (!baseName) {
+      baseName = originalFile.name.substring(0, originalFile.name.lastIndexOf('.'));
     }
-    checkAuth()
-  }, [navigate])
+
+    let cleanName = baseName.toLowerCase().trim();
+    cleanName = cleanName.replace(/\s+/g, '_');
+    cleanName = cleanName.replace(/[^\w\-]/g, '');
+
+    return `${cleanName}${ext}`;
+  };
+
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    setIsDragging(true)
-  }
+    e.preventDefault();
+    if (!isUploading) setIsDragging(true);
+  };
 
   const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    setIsDragging(false)
-  }
+    e.preventDefault();
+    setIsDragging(false);
+  };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    setIsDragging(false)
+    e.preventDefault();
+    setIsDragging(false);
+    
+    if (isUploading) return;
 
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const droppedFile = e.dataTransfer.files[0]
-      if (droppedFile.type.startsWith('image/')) {
-        setFile(droppedFile)
-      } else {
-        alert('Please drop a valid image file.')
-      }
+    const droppedFile = e.dataTransfer.files?.[0];
+    
+    if (droppedFile && droppedFile.type.startsWith('image/')) {
+      setSelectedFile(droppedFile);
+      setErrorMessage('');
+    } else {
+      setErrorMessage('Please drop a valid image file.');
     }
-  }
+  };
 
-  const handleUpload = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!file) return
+  async function handleUpload(e: React.FormEvent) {
+    e.preventDefault(); 
+    if (!selectedFile) return;
 
-    setUploading(true)
+    setIsUploading(true);
+    setUploadSuccess(false);
+    setErrorMessage('');
+
     try {
-      const fileExt = file.name.split('.').pop()
-      const fileName = `${crypto.randomUUID()}.${fileExt}`
+      let safeFilename = generateSafeFilename(title, selectedFile);
+      
+      const { data: existingFiles, error: checkError } = await supabase
+        .from('photos')
+        .select('file_name_google_cloud')
+        .eq('file_name_google_cloud', safeFilename);
 
-      const { error: uploadError } = await supabase.storage
-        .from('gallery_images')
-        .upload(fileName, file)
+      if (checkError) throw new Error("Failed to check for existing files: " + checkError.message);
 
-      if (uploadError) throw uploadError
+      if (existingFiles && existingFiles.length > 0) {
+        const userWantsToProceed = window.confirm(
+          `A photo with the filename "${safeFilename}" already exists in the gallery.\n\nDo you want to upload this anyway with a randomized name to prevent overwriting?`
+        );
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('gallery_images')
-        .getPublicUrl(fileName)
+        if (!userWantsToProceed) {
+          setIsUploading(false);
+          return; 
+        }
 
+        const extIndex = safeFilename.lastIndexOf('.');
+        const namePart = safeFilename.substring(0, extIndex);
+        const extPart = safeFilename.substring(extIndex);
+        const randomID = Math.random().toString(36).substring(2, 7); 
+        
+        safeFilename = `${namePart}_${randomID}${extPart}`;
+      }
+
+      const dimensions = await getImageDimensions(selectedFile);
+
+      const { data, error } = await supabase.functions.invoke('generate-upload-url', {
+        body: { 
+          filename: safeFilename, 
+          contentType: selectedFile.type 
+        }
+      });
+
+      if (error) throw new Error("Failed to get upload URL: " + error.message);
+
+      const { url } = data;
+
+      const uploadResponse = await fetch(url, {
+        method: 'PUT',
+        body: selectedFile,
+        headers: {
+          'Content-Type': selectedFile.type,
+        },
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error("Failed to upload to Google Cloud");
+      }
+
+      const publicUrl = `https://storage.googleapis.com/fadli-samaai-gallery/${safeFilename}`;
+      
       const { error: dbError } = await supabase
         .from('photos')
         .insert([
-          {
-            title: title || 'Untitled',
-            image_url: publicUrl,
-            alt_text: title || 'Gallery Image'
+          { 
+            image_url: publicUrl, 
+            title: title || selectedFile.name, 
+            alt_text: altText,
+            width: dimensions.width,
+            height: dimensions.height,
+            file_name_google_cloud: safeFilename 
           }
-        ])
+        ]);
 
-      if (dbError) throw dbError
+      if (dbError) {
+        throw new Error("Database error: " + dbError.message);
+      }
 
-      alert('Photo uploaded successfully!')
-      setFile(null)
-      setTitle('')
-    } catch (error) {
-      console.error('Error uploading:', error)
-      alert('Failed to upload photo. Check console for details.')
+      setUploadSuccess(true);
+      
+      setSelectedFile(null);
+      setTitle('');
+      setAltText('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      
+    } catch (err: any) {
+      console.error(err);
+      setErrorMessage(err.message || "An unexpected error occurred");
     } finally {
-      setUploading(false)
+      setIsUploading(false);
     }
   }
 
-  if (isAuthorized === null) return null 
-
   return (
-    <div className="max-w-2xl mx-auto px-4 py-16">
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
-        <div className="flex items-center gap-3 mb-8 border-b pb-4">
-          <UploadCloud className="w-8 h-8 text-gray-900" />
-          <h1 className="text-2xl font-bold text-gray-900">Upload to Gallery</h1>
-        </div>
-
-        <form onSubmit={handleUpload} className="space-y-6">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Photo Title (Optional)
-            </label>
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none transition-all"
-              placeholder="E.g., Cape Town Sunset"
+    <div className="p-8 max-w-md mx-auto mt-10 bg-white rounded-xl shadow-md border border-gray-100">
+      <h1 className="text-2xl font-bold mb-6 text-gray-800">Add to Gallery</h1>
+      
+      <form onSubmit={handleUpload} className="space-y-6">
+        
+        {/* DRAG AND DROP ZONE */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">Image File</label>
+          <div 
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => !isUploading && fileInputRef.current?.click()}
+            className={`flex flex-col items-center justify-center w-full h-40 px-4 py-6 border-2 border-dashed rounded-lg cursor-pointer transition-colors duration-200 ${
+              isDragging 
+                ? 'border-blue-500 bg-blue-50' 
+                : 'border-gray-300 bg-gray-50 hover:bg-gray-100'
+            } ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            {selectedFile ? (
+              <div className="text-center space-y-2">
+                <p className="text-sm font-semibold text-blue-600">{selectedFile.name}</p>
+                <p className="text-xs text-gray-500">Click or drag to replace</p>
+              </div>
+            ) : (
+              <div className="text-center space-y-2">
+                <p className="text-sm font-medium text-gray-600">
+                  <span className="text-blue-600 hover:underline">Click to upload</span> or drag and drop
+                </p>
+                <p className="text-xs text-gray-500">PNG, JPG, or WEBP</p>
+              </div>
+            )}
+            
+            {/* Hidden native file input */}
+            <input 
+              type="file" 
+              accept="image/*" 
+              onChange={(e) => {
+                if (e.target.files?.[0]) setSelectedFile(e.target.files[0]);
+              }} 
+              disabled={isUploading}
+              ref={fileInputRef}
+              className="hidden"
             />
           </div>
+        </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Select or Drop Image
-            </label>
-            
-            {/* The Drop Zone */}
-            <div 
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              className={`mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-dashed rounded-lg transition-colors duration-200 ${
-                isDragging 
-                  ? 'border-gray-900 bg-gray-100'
-                  : 'border-gray-300 hover:bg-gray-50'
-              }`}
-            >
-              <div className="space-y-1 text-center">
-                <ImageIcon className={`mx-auto h-12 w-12 transition-colors ${isDragging ? 'text-gray-900' : 'text-gray-400'}`} />
-                <div className="flex text-sm text-gray-600 justify-center">
-                  <label className="relative cursor-pointer rounded-md font-medium text-gray-900 underline hover:text-gray-700">
-                    <span>Click to upload</span>
-                    <input 
-                      type="file" 
-                      accept="image/*"
-                      onChange={(e) => setFile(e.target.files?.[0] || null)}
-                      className="sr-only" 
-                    />
-                  </label>
-                  <p className="pl-1">or drag and drop</p>
-                </div>
-                <p className="text-xs text-gray-500 font-medium mt-2">
-                  {file ? (
-                    <span className="text-gray-900">Selected: {file.name}</span>
-                  ) : (
-                    "PNG, JPG, WEBP up to 10MB"
-                  )}
-                </p>
-              </div>
-            </div>
-          </div>
+        {/* Title Input */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Title</label>
+          <input 
+            type="text" 
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            disabled={isUploading}
+            placeholder="e.g. BMW 330D (Front Profile)"
+            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+          />
+        </div>
 
-          <button
-            type="submit"
-            disabled={!file || uploading}
-            className="w-full flex justify-center items-center gap-2 py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-900 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-          >
-            {uploading ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                Uploading...
-              </>
-            ) : (
-              'Upload Photo'
-            )}
-          </button>
-        </form>
+        {/* Alt Text Input */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Alt Text (Accessibility)</label>
+          <input 
+            type="text" 
+            value={altText}
+            onChange={(e) => setAltText(e.target.value)}
+            disabled={isUploading}
+            placeholder="A brief description of the image"
+            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+          />
+        </div>
+
+        {/* Submit Button */}
+        <button 
+          type="submit" 
+          disabled={!selectedFile || isUploading}
+          className="w-full bg-blue-600 text-white font-semibold py-2.5 rounded-md hover:bg-blue-700 disabled:bg-gray-400 transition-colors"
+        >
+          {isUploading ? 'Uploading to Cloud...' : 'Upload Image'}
+        </button>
+      </form>
+      
+      {/* Status Messages */}
+      <div className="mt-4 min-h-[24px]">
+        {uploadSuccess && !isUploading && (
+          <p className="text-green-600 font-medium text-center">
+            Success! Image saved to gallery.
+          </p>
+        )}
+        {errorMessage && !isUploading && (
+          <p className="text-red-500 font-medium text-center">
+            Error: {errorMessage}
+          </p>
+        )}
       </div>
     </div>
-  )
+  );
 }

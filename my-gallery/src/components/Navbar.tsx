@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabaseClient'
 
 export default function Navbar() {
   const [isUploadActive, setIsUploadActive] = useState(false)
+  const [isScrolled, setIsScrolled] = useState(false);
 
   useEffect(() => {
     async function checkUploadConfig() {
@@ -22,14 +23,40 @@ export default function Navbar() {
     checkUploadConfig()
   }, [])
 
+  useEffect(() => {
+    const handleScroll = () => {
+      if (window.scrollY > 5) {
+        setIsScrolled(true);
+      } else {
+        setIsScrolled(false);
+      }
+    };
+
+    window.addEventListener('scroll', handleScroll);
+    
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
   return (
-    <nav className="sticky top-0 z-50 w-full bg-white/90 backdrop-blur-md border-b border-gray-200">
+    <nav className="sticky top-0 z-50 w-full bg-white/80 backdrop-blur-md border-b border-gray-200">
       <div className="w-full px-4 sm:px-6 lg:px-8">
         <div className="grid grid-cols-3 items-center h-16">
           <div className="flex justify-start">
             <Link to="/" className="flex items-center gap-2 text-xl font-semibold tracking-tight text-gray-900 hover:text-gray-600 transition-colors">
-              <Camera className="w-6 h-6" />
-              <span className="hidden sm:inline">Gallery</span>
+              <div className="flex items-center gap-2">
+                <Camera 
+                  className={`w-6 h-6 duration-300 ${
+                    isScrolled ? 'text-white/80 blur-md' : 'text-white'
+                  }`} 
+                />
+                <span 
+                  className={`hidden sm:inline duration-300 ${
+                    isScrolled ? 'text-white/80 blur-md' : 'text-white'
+                  }`}
+                >
+                  Gallery
+                </span>
+              </div>
             </Link>
           </div>
 
